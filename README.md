@@ -1,67 +1,70 @@
-# CIRCE MVP
+# CIRCE · Conversational Intelligence for Response and Cybersecurity Education
 
-CIRCE (Conversational Intelligence for Response and Cybersecurity Education) es un MVP local orientado a educación en ciberseguridad mediante simulación interactiva con voz y un escape room conversacional.
+**CIRCE** es una plataforma modular de entrenamiento en respuesta a incidentes de ciberseguridad mediante simulación interactiva con **Voz (STT + TTS)**, **Texto** e **Inteligencia Artificial (LLM Local + Evaluador Semántico)**.
 
-## Objetivo del MVP
+## Características Principales
 
-- Un único escenario: filtración de datos / acceso no autorizado a información corporativa.
-- Árbol de decisiones corto: 3 nodos de decisión iniciales.
-- Interacción principal: voz + audio de retorno.
-- Ejecución local para privacidad y latencia.
+- **5 Niveles de Campaña + 5 Etapas de Decisión por Nivel (25 Nodos Interactivos)**:
+  1. **Nivel 1 · Filtración de Datos Corporativos** (Detección, Contención, Evidencia Forense, Control de Credenciales, Notificación Regulatoria y Erradicación).
+  2. **Nivel 2 · Ataque de Ransomware en Red** (Aislamiento SMB, Backups Inmutables, Paciente Cero, Gestión de Crisis y Restauración Limpia).
+  3. **Nivel 3 · Phishing Ejecutivo y Fraude BEC** (Bloqueo de Sesión, Freno de Transferencia Fuera de Banda, Reglas Ocultas OAuth, Alerta a Clientes y Blindaje DMARC/MFA).
+  4. **Nivel 4 · Intrusión Cloud y Fuga de API Keys** (Revocación IAM, Contención de Instancias, Auditoría CloudTrail, Limpieza de Secretos en Git y Mínimo Privilegio).
+  5. **Nivel 5 · Amenaza Interna y Sabotaje Crítico** (Contención DLP/PAM, Cadena de Custodia Forense, Búsqueda de Bombas Lógicas, Coordinación Legal/RRHH y Control Dual).
+- **Interacción Multimodal Completa (Voz y Texto)**:
+  - **Instrucciones en Texto y Audio**: Cada nivel presenta las instrucciones en pantalla y las narra automáticamente en voz alta en español (`espeak-ng` / `pyttsx3` no bloqueante).
+  - **Respuesta del Estudiante por Audio o Texto**: Grabación interactiva de micrófono en tiempo real (`sounddevice` PCM 16-bit 16kHz + transcripción `faster-whisper`) o entrada directa por teclado.
+  - **Evaluación del Modelo en Texto y Audio**: Retroalimentación inmediata hablada y escrita generada por **Ollama (`llama3.1` / `qwen2.5`)** con fallback transparente al **Evaluador Semántico Local** en español.
 
-## Stack recomendado
-
-- STT: faster-whisper o Whisper local de OpenAI.
-- LLM: Ollama con modelos locales como `llama3.1`, `mistral`, o `qwen2.5`.
-- TTS: pyttsx3 (offline) o Piper TTS.
-- Orquestación: Python puro con clases y prompt-driven evaluation.
-- Base de conocimiento: reglas en Python + estructura de escenarios.
-
-## Estructura del proyecto
+## Arquitectura Modular
 
 ```text
-circe_mvp/
-├── main.py
-├── requirements.txt
-├── README.md
-├── circe_app/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── orchestrator.py
-│   ├── ai/
-│   │   ├── __init__.py
-│   │   └── llm_client.py
-│   ├── audio/
-│   │   ├── __init__.py
-│   │   ├── stt.py
-│   │   └── tts.py
-│   └── knowledge/
-│       ├── __init__.py
-│       └── scenario.py
-└── .gitignore
+AIAGENT/
+├── main.py                         # CLI y punto de entrada (--gui, --mic, --level, --demo-text)
+├── run_gui.py                      # Lanzador directo de la Interfaz Gráfica (Tkinter)
+├── demo_run.py                     # Demo rápida del pipeline de voz
+├── requirements.txt                # Dependencias del proyecto
+├── tests/
+│   └── test_circe_architecture.py  # Suite de pruebas automatizadas (pytest)
+└── circe_app/
+    ├── config.py                   # Configuración tipada (CIRCEConfig, LevelScenario, ScenarioNode)
+    ├── orchestrator.py             # Orquestador central (Voz STT/TTS + Motor de Juego + IA)
+    ├── game_engine.py              # Motor de progresión de los 5 niveles y sus 5 nodos
+    ├── session.py                  # Estado de sesión (XP, Vidas, Métricas del incidente, Tiempo)
+    ├── evaluator.py                # Evaluador semántico y morfológico local en español
+    ├── services.py                 # Diagnóstico en tiempo real de capacidades locales
+    ├── voice_pipeline.py           # Pipeline unificado de turno de voz
+    ├── ai/
+    │   └── llm_client.py           # Cliente asíncrono para Ollama LLM local (JSON estructurado)
+    ├── audio/
+    │   ├── stt.py                  # Grabación interactiva Start/Stop + faster-whisper STT
+    │   └── tts.py                  # Síntesis de voz asíncrona cancelable en español (espeak-ng/pyttsx3)
+    ├── knowledge/
+    │   ├── scenario.py             # Catálogo de los 5 niveles y sus árboles de 5 decisiones
+    │   ├── rules.py                # Reglas de respuesta a incidentes (IR-01 a IR-04)
+    │   └── incident_data.py        # Contexto base de incidentes
+    └── ui/
+        ├── gui_app.py              # Interfaz gráfica interactiva completa (Inicio, Simulación, Resultados)
+        └── local_console.py        # Interfaz interactiva por consola (texto y comando /voz)
 ```
 
-## Cómo ejecutar
+## Cómo Ejecutar
 
-1. Crear entorno virtual.
-2. Instalar dependencias:
-   `pip install -r requirements.txt`
-3. Iniciar Ollama local y descargar un modelo, por ejemplo:
-   `ollama run llama3.1`
-4. Ejecutar:
-   `python main.py --demo-text "Aísla el servidor afectado y revisa los logs"`
-
-Se puede usar `--mic` para grabar audio desde el micrófono.
-
-## Escenario base
-
-El caso trata de una filtración de datos desde un sistema de archivos interno de una empresa. El Narrador Virtual presenta un incidente y pregunta al estudiante qué acción toma en cada nodo.
-
-La lógica del MVP evalúa si la acción es:
-- correcta,
-- parcialmente correcta,
-- incorrecta o grave.
-
-## Nota importante
-
-Este MVP prioriza una arquitectura funcional y un ejemplo operativo de flujo completo de audio + evaluación + respuesta. Está preparado para ampliarse con más escenario, mayor robustez de validación y un front-end más rico.
+1. **Activar el entorno virtual**:
+   ```bash
+   source .venv/bin/activate
+   ```
+2. **Ejecutar la Interfaz Gráfica Interactiva (Recomendado)**:
+   ```bash
+   python run_gui.py
+   # o también:
+   python main.py --gui
+   ```
+3. **Ejecutar desde Consola (CLI)**:
+   ```bash
+   python main.py --level level_1 --demo-text "Aíslo el servidor afectado de la red y bloqueo el acceso"
+   python main.py --level level_2 --mic
+   ```
+4. **Ejecutar pruebas automatizadas**:
+   ```bash
+   python -m pytest -v
+   ```

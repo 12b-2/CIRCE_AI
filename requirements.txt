@@ -1,0 +1,17 @@
+# Core
+python-dotenv>=1.0.0
+requests>=2.31.0
+pydantic>=2.7.0
+
+# Audio / Voice
+sounddevice>=0.4.7
+scipy>=1.13.0
+numpy>=1.26.0
+faster-whisper>=1.0.0
+pyttsx3>=2.90.0
+
+# Local LLM integration
+ollama>=0.1.0
+
+# Optional tooling
+pytest>=8.0.0

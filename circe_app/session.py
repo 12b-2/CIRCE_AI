@@ -58,3 +58,24 @@ class SessionState:
         elapsed = max(0, int(time.time() - self.start_timestamp))
         minutes, seconds = divmod(elapsed, 60)
         return f"{minutes:02d}:{seconds:02d}"
+
+    def to_record(self) -> dict[str, Any]:
+        """Serializa los campos persistibles del progreso (sin transcript/feedback)."""
+        return {
+            "level_id": self.level_id,
+            "active_node": self.active_node,
+            "scenario_completed": self.scenario_completed,
+            "score": self.score,
+            "xp": self.xp,
+            "lives": self.lives,
+            "max_lives": self.max_lives,
+            "attempts": self.attempts,
+            "containment": self.containment,
+            "data_safety": self.data_safety,
+            "service_health": self.service_health,
+            "node_results": self.node_results,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "SessionState":
+        return cls(**record)

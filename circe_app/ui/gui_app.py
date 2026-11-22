@@ -5,7 +5,8 @@ import threading
 import tkinter as tk
 from typing import Any
 
-from circe_app.knowledge.scenario import list_levels
+from circe_app.auth import AuthError, AuthService, ProgressStore, User
+from circe_app.knowledge.scenario import get_level_scenario, list_levels
 from circe_app.orchestrator import CIRCEOrchestrator
 from circe_app.services import check_local_capabilities
 
@@ -38,8 +39,11 @@ class CIRCEGuiApp(tk.Tk):
 
         self.runtime_status = check_local_capabilities()
         self.orchestrator = CIRCEOrchestrator(level_id="level_1")
-        self.completed_levels: dict[str, float] = {}
-        self.current_screen = "start"
+        self.auth_service = AuthService()
+        self.progress_store = ProgressStore()
+        self.current_user: User | None = None
+        self.progress_dropdown: tk.Frame | None = None
+        self.current_screen = "login"
         self.screens: dict[str, tk.Frame] = {}
         self.input_mode = "voice"
         self.awaiting_next_node = False
@@ -50,10 +54,11 @@ class CIRCEGuiApp(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.build_ui()
-        self.show_screen("start")
+        self.show_screen("login")
 
     def _on_close(self) -> None:
         try:
+            self._persist_progress()
             self.orchestrator.tts.stop()
             if self.orchestrator.stt.is_recording:
                 self.orchestrator.stt.stop_stream_recording()
@@ -64,9 +69,377 @@ class CIRCEGuiApp(tk.Tk):
     def build_ui(self) -> None:
         for child in self.container.winfo_children():
             child.destroy()
+        self.screens["login"] = self.build_login_screen(self.container)
+        self.screens["register"] = self.build_register_screen(self.container)
         self.screens["start"] = self.build_start_screen(self.container)
         self.screens["sim"] = self.build_sim_screen(self.container)
         self.screens["results"] = self.build_results_screen(self.container)
+
+    # =========================================================================
+    # PANTALLA 0A/0B: LOGIN Y REGISTRO (PANTALLAS SEPARADAS)
+    # =========================================================================
+    def _build_brand_panel(self, parent: tk.Widget) -> None:
+        """Panel izquierdo de marca (morado) compartido por login y registro."""
+        panel = tk.Frame(parent, bg=PURPLE, width=440)
+        panel.pack(side="left", fill="y")
+        panel.pack_propagate(False)
+
+        bg_canvas = tk.Canvas(panel, bg=PURPLE, highlightthickness=0)
+        bg_canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
+        bg_canvas.create_oval(-70, -70, 190, 190, fill="#7C62E8", outline="")
+        bg_canvas.create_oval(300, -50, 480, 130, fill="#5B3FD1", outline="")
+        bg_canvas.create_oval(-60, 600, 160, 820, fill="#5B3FD1", outline="")
+        bg_canvas.create_oval(290, 640, 520, 870, fill="#7C62E8", outline="")
+
+        inner = tk.Frame(panel, bg=PURPLE)
+        inner.place(relx=0.5, rely=0.46, anchor="center")
+
+        avatar = tk.Canvas(inner, width=156, height=156, bg=PURPLE, highlightthickness=0)
+        avatar.pack(pady=(0, 22))
+        avatar.create_polygon(
+            44, 12, 112, 12, 144, 44, 144, 112, 112, 144, 44, 144, 12, 112, 12, 44,
+            fill="white", outline="#E4DBFF", width=3,
+        )
+        avatar.create_oval(44, 54, 68, 78, fill=PURPLE)
+        avatar.create_oval(88, 54, 112, 78, fill=PURPLE)
+        avatar.create_oval(50, 59, 61, 70, fill=PURPLE_DARK)
+        avatar.create_oval(94, 59, 105, 70, fill=PURPLE_DARK)
+        avatar.create_arc(50, 82, 106, 122, start=200, extent=140, fill="", outline=PURPLE, width=3)
+
+        tk.Label(inner, text="circe", bg=PURPLE, fg="white", font=("Nunito", 34, "bold")).pack()
+        tk.Frame(inner, bg=GREEN, width=60, height=4).pack(pady=(10, 0))
+
+    def _build_auth_card(
+        self, parent: tk.Widget, width: int, height: int, accent_color: str
+    ) -> tk.Frame:
+        """Tarjeta blanca con sombra suave y una franja de acento superior."""
+        shadow = tk.Frame(parent, bg="#D9D3EE")
+        shadow.place(relx=0.5, rely=0.5, anchor="center", width=width, height=height)
+
+        card = tk.Frame(parent, bg=WHITE, highlightbackground=LINE, highlightthickness=1)
+        card.place(relx=0.5, rely=0.5, anchor="center", width=width, height=height, x=-6, y=-6)
+        card.pack_propagate(False)
+
+        tk.Frame(card, bg=accent_color, height=5).pack(fill="x", side="top")
+
+        content = tk.Frame(card, bg=WHITE)
+        content.pack(fill="both", expand=True, padx=44, pady=34)
+        return content
+
+    def _build_labeled_entry(
+        self, parent: tk.Widget, label: str, show: str | None = None
+    ) -> tuple[tk.Frame, tk.StringVar]:
+        wrap = tk.Frame(parent, bg=WHITE)
+        tk.Label(wrap, text=label, bg=WHITE, fg=MUTED, font=("Nunito", 10, "bold"), anchor="w").pack(
+            fill="x"
+        )
+        var = tk.StringVar()
+        entry = tk.Entry(
+            wrap,
+            textvariable=var,
+            font=("Nunito", 13),
+            bd=0,
+            bg=SOFT,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            show=show or "",
+        )
+        entry.pack(fill="x", pady=(5, 0), ipady=8, ipadx=8)
+        entry.bind("<FocusIn>", lambda _e, en=entry: en.config(bg="#EDE8FF"))
+        entry.bind("<FocusOut>", lambda _e, en=entry: en.config(bg=SOFT))
+        return wrap, var
+
+    def build_login_screen(self, parent: tk.Widget) -> tk.Frame:
+        screen = tk.Frame(parent, bg=BG)
+        self._build_brand_panel(screen)
+
+        right = tk.Frame(screen, bg=BG)
+        right.pack(side="left", fill="both", expand=True)
+
+        inner = self._build_auth_card(right, 420, 420, PURPLE)
+
+        tk.Label(inner, text="Bienvenido de nuevo", bg=WHITE, fg=TEXT, font=("Nunito", 22, "bold")).pack(
+            anchor="w"
+        )
+        tk.Label(
+            inner,
+            text="Inicia sesión para continuar tu entrenamiento",
+            bg=WHITE,
+            fg=MUTED,
+            font=("Nunito", 11, "bold"),
+        ).pack(anchor="w", pady=(2, 26))
+
+        user_wrap, self.login_username_var = self._build_labeled_entry(inner, "Usuario")
+        user_wrap.pack(fill="x", pady=(0, 14))
+        pass_wrap, self.login_password_var = self._build_labeled_entry(inner, "Contraseña", show="•")
+        pass_wrap.pack(fill="x", pady=(0, 6))
+
+        self.login_status_label = tk.Label(
+            inner, text="", bg=WHITE, fg=RED_DARK, font=("Nunito", 10, "bold"), wraplength=320,
+            justify="left", anchor="w",
+        )
+        self.login_status_label.pack(fill="x", pady=(8, 2))
+
+        tk.Button(
+            inner,
+            text="Iniciar sesión",
+            bg=PURPLE,
+            fg="white",
+            activebackground=PURPLE_DARK,
+            activeforeground="white",
+            font=("Nunito", 12, "bold"),
+            bd=0,
+            pady=12,
+            cursor="hand2",
+            command=self._handle_login,
+        ).pack(fill="x", pady=(16, 20))
+
+        switch_row = tk.Frame(inner, bg=WHITE)
+        switch_row.pack(fill="x")
+        tk.Label(switch_row, text="¿No tienes cuenta?", bg=WHITE, fg=MUTED, font=("Nunito", 10, "bold")).pack(
+            side="left"
+        )
+        tk.Button(
+            switch_row,
+            text="Crear una cuenta",
+            bg=WHITE,
+            fg=PURPLE,
+            activeforeground=PURPLE_DARK,
+            font=("Nunito", 10, "bold", "underline"),
+            bd=0,
+            relief="flat",
+            cursor="hand2",
+            command=self._go_to_register,
+        ).pack(side="left", padx=6)
+
+        return screen
+
+    def build_register_screen(self, parent: tk.Widget) -> tk.Frame:
+        screen = tk.Frame(parent, bg=BG)
+        self._build_brand_panel(screen)
+
+        right = tk.Frame(screen, bg=BG)
+        right.pack(side="left", fill="both", expand=True)
+
+        inner = self._build_auth_card(right, 420, 520, GREEN)
+
+        tk.Label(inner, text="Crea tu cuenta", bg=WHITE, fg=TEXT, font=("Nunito", 22, "bold")).pack(anchor="w")
+        tk.Label(
+            inner,
+            text="Guarda tu progreso en los 5 niveles de campaña",
+            bg=WHITE,
+            fg=MUTED,
+            font=("Nunito", 11, "bold"),
+        ).pack(anchor="w", pady=(2, 24))
+
+        user_wrap, self.register_username_var = self._build_labeled_entry(
+            inner, "Usuario (3-32 caracteres)"
+        )
+        user_wrap.pack(fill="x", pady=(0, 12))
+        pass_wrap, self.register_password_var = self._build_labeled_entry(
+            inner, "Contraseña (mínimo 6 caracteres)", show="•"
+        )
+        pass_wrap.pack(fill="x", pady=(0, 12))
+        confirm_wrap, self.register_confirm_var = self._build_labeled_entry(
+            inner, "Confirmar contraseña", show="•"
+        )
+        confirm_wrap.pack(fill="x", pady=(0, 6))
+
+        self.register_status_label = tk.Label(
+            inner, text="", bg=WHITE, fg=RED_DARK, font=("Nunito", 10, "bold"), wraplength=320,
+            justify="left", anchor="w",
+        )
+        self.register_status_label.pack(fill="x", pady=(8, 2))
+
+        tk.Button(
+            inner,
+            text="Crear cuenta",
+            bg=GREEN,
+            fg="#10202B",
+            activebackground=GREEN_DARK,
+            activeforeground="#10202B",
+            font=("Nunito", 12, "bold"),
+            bd=0,
+            pady=12,
+            cursor="hand2",
+            command=self._handle_register,
+        ).pack(fill="x", pady=(16, 20))
+
+        switch_row = tk.Frame(inner, bg=WHITE)
+        switch_row.pack(fill="x")
+        tk.Label(switch_row, text="¿Ya tienes cuenta?", bg=WHITE, fg=MUTED, font=("Nunito", 10, "bold")).pack(
+            side="left"
+        )
+        tk.Button(
+            switch_row,
+            text="Iniciar sesión",
+            bg=WHITE,
+            fg=PURPLE,
+            activeforeground=PURPLE_DARK,
+            font=("Nunito", 10, "bold", "underline"),
+            bd=0,
+            relief="flat",
+            cursor="hand2",
+            command=self._go_to_login,
+        ).pack(side="left", padx=6)
+
+        return screen
+
+    def _go_to_register(self) -> None:
+        self.login_status_label.config(text="")
+        self.show_screen("register")
+
+    def _go_to_login(self) -> None:
+        self.register_status_label.config(text="")
+        self.show_screen("login")
+
+    def _handle_login(self) -> None:
+        username = self.login_username_var.get()
+        password = self.login_password_var.get()
+        try:
+            user = self.auth_service.login(username, password)
+        except AuthError as exc:
+            self.login_status_label.config(text=str(exc))
+            return
+        self._complete_login(user)
+
+    def _handle_register(self) -> None:
+        username = self.register_username_var.get()
+        password = self.register_password_var.get()
+        confirm = self.register_confirm_var.get()
+        if password != confirm:
+            self.register_status_label.config(text="Las contraseñas no coinciden.")
+            return
+        try:
+            user = self.auth_service.register(username, password)
+        except AuthError as exc:
+            self.register_status_label.config(text=str(exc))
+            return
+        self._complete_login(user)
+
+    def _complete_login(self, user: User) -> None:
+        self.current_user = user
+        self.login_status_label.config(text="")
+        self.register_status_label.config(text="")
+        self.login_username_var.set("")
+        self.login_password_var.set("")
+        self.register_username_var.set("")
+        self.register_password_var.set("")
+        self.register_confirm_var.set("")
+        self.progress_dropdown = None
+        self.screens["start"].destroy()
+        self.screens["start"] = self.build_start_screen(self.container)
+        self.show_screen("start")
+
+    def _handle_logout(self) -> None:
+        self._persist_progress()
+        self.orchestrator.tts.stop()
+        self.current_user = None
+        self.progress_dropdown = None
+        self.orchestrator.select_level("level_1")
+        self.show_screen("login")
+
+    def _toggle_progress_dropdown(self) -> None:
+        if self.progress_dropdown is not None:
+            self.progress_dropdown.destroy()
+            self.progress_dropdown = None
+            if self.current_user is not None:
+                self.progress_toggle_btn.config(text=f"{self.current_user.username}  ▾")
+            return
+        self._open_user_menu()
+
+    def _open_user_menu(self) -> None:
+        """Menú del usuario: insignias por nivel completado + cerrar sesión."""
+        if self.current_user is None:
+            return
+        screen = self.screens["start"]
+        levels = list_levels()
+        all_progress = self.progress_store.get_all_progress(self.current_user.id)
+        earned_badges = [
+            lvl for lvl in levels if all_progress.get(lvl.id, {}).get("scenario_completed")
+        ]
+
+        panel = tk.Frame(screen, bg=WHITE, highlightbackground=LINE, highlightthickness=1)
+        panel.place(relx=1.0, x=-24, y=74, anchor="ne", width=280)
+        self.progress_dropdown = panel
+        self.progress_toggle_btn.config(text=f"{self.current_user.username}  ▴")
+
+        tk.Label(
+            panel, text=self.current_user.username, bg=WHITE, fg=TEXT,
+            font=("Nunito", 13, "bold"), anchor="w",
+        ).pack(fill="x", padx=18, pady=(16, 2))
+        tk.Label(
+            panel, text="Insignias", bg=WHITE, fg=MUTED, font=("Nunito", 10, "bold"), anchor="w",
+        ).pack(fill="x", padx=18, pady=(10, 8))
+
+        badges_area = tk.Frame(panel, bg=WHITE)
+        badges_area.pack(fill="x", padx=18)
+
+        if not earned_badges:
+            tk.Label(
+                badges_area,
+                text="Aún no tienes insignias. ¡Completa un nivel para ganar la primera!",
+                bg=WHITE,
+                fg=MUTED,
+                font=("Nunito", 9, "bold"),
+                anchor="w",
+                justify="left",
+                wraplength=240,
+            ).pack(fill="x")
+        else:
+            columns = 4
+            for idx, lvl in enumerate(earned_badges):
+                badge = tk.Frame(badges_area, bg="#EDE8FF", width=52, height=52)
+                badge.grid(row=idx // columns, column=idx % columns, padx=5, pady=5)
+                badge.grid_propagate(False)
+                tk.Label(badge, text=lvl.icon, bg="#EDE8FF", font=("Segoe UI Emoji", 20)).place(
+                    relx=0.5, rely=0.5, anchor="center"
+                )
+
+        tk.Button(
+            panel,
+            text="Cerrar sesión",
+            bg=SOFT,
+            fg=PURPLE_DARK,
+            activebackground=LINE,
+            font=("Nunito", 10, "bold"),
+            bd=0,
+            cursor="hand2",
+            command=self._handle_logout,
+        ).pack(fill="x", padx=18, pady=(16, 18))
+
+    def _describe_level_progress(
+        self, lvl: Any, record: dict[str, Any] | None
+    ) -> tuple[str, str, str, str]:
+        if record and record.get("scenario_completed"):
+            return (
+                "Completado",
+                "#DDF7E8",
+                "#146B3A",
+                f"Score: {record['score']:.0f} pts · {record['xp']} XP",
+            )
+        if record:
+            scenario = get_level_scenario(lvl.id)
+            node = scenario.nodes.get(record["active_node"])
+            position = node.level_number if node else 1
+            total_nodes = len(scenario.nodes)
+            return (
+                "En progreso",
+                "#FFF3CF",
+                "#7A4E00",
+                f"Decisión {position} de {total_nodes} · {record['score']:.0f} pts",
+            )
+        return ("No iniciado", SOFT, MUTED, "Aún sin empezar")
+
+    def _persist_progress(self) -> None:
+        """Guarda en la base de datos local el avance actual (score, XP, vidas, nodo activo)."""
+        if self.current_user is None:
+            return
+        try:
+            self.progress_store.save_progress(self.current_user.id, self.orchestrator.session)
+        except Exception:
+            pass
 
     # =========================================================================
     # PANTALLA 1: INICIO Y SELECCIÓN DE LOS 5 NIVELES
@@ -92,6 +465,25 @@ class CIRCEGuiApp(tk.Tk):
             if self.runtime_status.llm_available
             else "IA: Evaluador Semántico + Voz Local"
         )
+
+        user_bar = tk.Frame(topbar, bg=WHITE)
+        user_bar.pack(side="right", fill="y", padx=(0, 20))
+        username = self.current_user.username if self.current_user else "Invitado"
+        self.progress_toggle_btn = tk.Button(
+            user_bar,
+            text=f"{username}  ▾",
+            bg=WHITE,
+            fg=TEXT,
+            activebackground=SOFT,
+            font=("Nunito", 11, "bold"),
+            bd=0,
+            padx=10,
+            pady=6,
+            cursor="hand2",
+            command=self._toggle_progress_dropdown,
+        )
+        self.progress_toggle_btn.pack(side="left", padx=(0, 10))
+
         tk.Label(
             topbar,
             text=f"Universidad Tecnológica Tula-Tepeji  ·  {ai_badge_text}",
@@ -241,9 +633,21 @@ class CIRCEGuiApp(tk.Tk):
         levels_container = tk.Frame(right, bg=BG)
         levels_container.pack(fill="both", expand=True)
 
+        all_progress = (
+            self.progress_store.get_all_progress(self.current_user.id) if self.current_user else {}
+        )
+
         for lvl in list_levels():
-            is_done = lvl.id in self.completed_levels
-            border_color = GREEN if lvl.level_number == 1 or is_done else PURPLE
+            record = all_progress.get(lvl.id)
+            status_text, status_bg, status_fg, detail = self._describe_level_progress(lvl, record)
+            is_done = status_text == "Completado"
+            in_progress = status_text == "En progreso"
+
+            border_color = GREEN if is_done else YELLOW if in_progress else (
+                GREEN if lvl.level_number == 1 else PURPLE
+            )
+            icon_bg = GREEN if is_done else "#FFF3CF" if in_progress else "#EDE8FF"
+
             card = tk.Frame(
                 levels_container,
                 bg=WHITE,
@@ -256,13 +660,13 @@ class CIRCEGuiApp(tk.Tk):
             )
             card.pack(fill="x", pady=5)
 
-            icon_box = tk.Frame(card, bg=GREEN if is_done else "#EDE8FF", width=52, height=52)
+            icon_box = tk.Frame(card, bg=icon_bg, width=52, height=52)
             icon_box.pack_propagate(False)
             icon_box.pack(side="left")
             tk.Label(
                 icon_box,
                 text=lvl.icon,
-                bg=GREEN if is_done else "#EDE8FF",
+                bg=icon_bg,
                 fg=TEXT,
                 font=("Segoe UI Emoji", 20),
             ).pack(expand=True)
@@ -288,12 +692,13 @@ class CIRCEGuiApp(tk.Tk):
                 padx=8,
                 pady=2,
             ).pack(side="left", padx=10)
-            if is_done:
+            if is_done or in_progress:
+                icon_prefix = "✓ " if is_done else "▸ "
                 tk.Label(
                     header_row,
-                    text=f"✓ Completado ({self.completed_levels[lvl.id]:.0f} pts)",
-                    bg="#DDF7E8",
-                    fg="#146B3A",
+                    text=f"{icon_prefix}{status_text} ({detail})",
+                    bg=status_bg,
+                    fg=status_fg,
                     font=("Nunito", 9, "bold"),
                     padx=8,
                     pady=2,
@@ -912,6 +1317,10 @@ class CIRCEGuiApp(tk.Tk):
     # =========================================================================
     def start_level(self, level_id: str) -> None:
         self.orchestrator.select_level(level_id)
+        if self.current_user is not None:
+            saved = self.progress_store.load_progress(self.current_user.id, level_id)
+            if saved is not None and not saved.scenario_completed:
+                self.orchestrator.load_session(saved)
         self.awaiting_next_node = False
         self.show_screen("sim")
 
@@ -919,6 +1328,7 @@ class CIRCEGuiApp(tk.Tk):
         self.orchestrator.tts.stop()
         if self.orchestrator.stt.is_recording:
             self.orchestrator.stt.stop_stream_recording()
+        self.progress_dropdown = None
         self.screens["start"].destroy()
         self.screens["start"] = self.build_start_screen(self.container)
         self.show_screen("start")
@@ -1248,6 +1658,7 @@ class CIRCEGuiApp(tk.Tk):
 
         self.awaiting_next_node = True
         self.refresh_scene(speak_instructions=False)
+        self._persist_progress()
         self._set_feedback_banner(
             bg_color=bg_c,
             border_color=bd_c,
@@ -1273,8 +1684,7 @@ class CIRCEGuiApp(tk.Tk):
         if has_more:
             self.refresh_scene(speak_instructions=True)
         else:
-            lvl_id = self.orchestrator.session.level_id
-            self.completed_levels[lvl_id] = self.orchestrator.session.score
+            self._persist_progress()
             self.show_screen("results")
 
     # =========================================================================

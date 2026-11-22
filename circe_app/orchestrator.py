@@ -54,6 +54,12 @@ class CIRCEOrchestrator:
             active_node=self.current_node,
         )
 
+    def load_session(self, session: SessionState) -> None:
+        """Restaura una sesión previamente guardada (nodo activo, score, XP, vidas, etc.)."""
+        self.session = session
+        self.current_node = session.active_node
+        self.engine.advance(session.active_node)
+
     def get_active_node(self) -> ScenarioNode:
         return self.engine.level_scenario.nodes[self.current_node]
 

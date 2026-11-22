@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import asyncio
+from typing import Any
 from circe_app.ai.llm_client import LLMClient
 from circe_app.audio.stt import SpeechToText
 from circe_app.audio.tts import TextToSpeech
@@ -9,6 +11,10 @@ from circe_app.config import CIRCEConfig, DEFAULT_CONFIG, ScenarioNode
 from circe_app.evaluator import DecisionValidator
 from circe_app.game_engine import ScenarioEngine
 from circe_app.session import SessionState
+from circe_app.hybrid import combine
+from circe_app.knowledge.context import build_node_context
+import threading
+from circe_app.security import strip_injection
 
 
 class CIRCEOrchestrator:
@@ -42,6 +48,7 @@ class CIRCEOrchestrator:
             level_id=selected_level,
             active_node=self.current_node,
         )
+        threading.Thread(target=self.llm.warm_up, daemon=True).start()
 
     def select_level(self, level_id: str) -> None:
         """Cambia o reinicia a uno de los 5 niveles disponibles."""
@@ -90,23 +97,11 @@ class CIRCEOrchestrator:
         return transcript
 
     async def evaluate_node_decision(self, node: ScenarioNode, student_text: str) -> dict[str, Any]:
-        """Evalúa la respuesta usando el LLM local (si está activo) o el Evaluador Semántico Local."""
-        if self.llm.is_available():
-            try:
-                evaluation = await self.llm.evaluate_action(
-                    user_text=student_text,
-                    node_prompt=node.prompt,
-                    correct_actions=node.correct_actions,
-                    partial_actions=node.partial_actions,
-                    wrong_actions=node.wrong_actions,
-                )
-                evaluation["engine_used"] = f"LLM ({self.llm.model})"
-                return evaluation
-            except Exception:
-                pass
+        clean_text, flagged = strip_injection(student_text)
+        eval_text = clean_text if flagged else student_text
 
-        evaluation = self.validator.evaluate(
-            user_text=student_text,
+        local = self.validator.evaluate(
+            user_text=eval_text,
             node_prompt=node.prompt,
             correct_actions=node.correct_actions,
             partial_actions=node.partial_actions,
@@ -115,8 +110,45 @@ class CIRCEOrchestrator:
             keywords_partial=node.keywords_partial,
             keywords_wrong=node.keywords_wrong,
         )
-        evaluation["engine_used"] = "Evaluador Semántico Local"
-        return evaluation
+
+        if flagged:
+            # Intento de manipulación: no se consulta al LLM y el máximo es "partial".
+            if local["verdict"] == "correct":
+                local["verdict"] = "partial"
+                local["score"] = min(local["score"], 0.6)
+                local["reason"] = (
+                    "Tu acción de contención es válida, pero incluiste instrucciones dirigidas "
+                    "al evaluador y las ignoré, así que no obtienes la calificación máxima."
+                )
+                local["recommended_action"] = "Describe solo las acciones técnicas que ejecutarías."
+            else:
+                local["reason"] = "Ignoré las instrucciones dirigidas al evaluador. " + local["reason"]
+            local["engine_used"] = "Evaluador local (intento de manipulación ignorado)"
+            return local
+
+        available = await asyncio.to_thread(self.llm.is_available)
+        if available:
+            try:
+                context = build_node_context(
+                    self.engine.level_scenario, node, self.session, self.history
+                )
+                llm_eval = await self.llm.evaluate_action(
+                    user_text=student_text,
+                    node_prompt=node.prompt,
+                    correct_actions=node.correct_actions,
+                    partial_actions=node.partial_actions,
+                    wrong_actions=node.wrong_actions,
+                    context=context,
+                )
+                focus = node.title.split("·")[-1].strip().lower()
+                result = combine(local, llm_eval, focus=focus, avoided=node.consequences[0] if node.consequences else "")
+                result["engine_used"] = f"Híbrido (LLM {self.llm.model} + local)"
+                return result
+            except Exception:
+                pass
+
+        local["engine_used"] = "Evaluador Semántico Local"
+        return local
 
     def advance_to_next_node(self) -> bool:
         """Avanza al siguiente nodo de los 5 niveles. Devuelve True si avanzó o False si completó el escenario."""

@@ -14,10 +14,21 @@ STOPWORDS_ES = {
     "haria", "voy", "vamos",
 }
 
+# Palabras que niegan lo que viene después ("sin apagarlo", "no formateo").
+NEGATIONS = {"no", "nunca", "jamas", "sin", "ni", "evito", "evitar", "evitamos", "evita", "evitando"}
+NEGATION_LOOKBACK = 3   # cuántas palabras hacia atrás se revisan
+KEYWORD_GAP = 2         # palabras que pueden separar las partes de una palabra clave de varias palabras
+
 
 class DecisionValidator:
     """Validador semántico y léxico local de decisiones para CIRCE.
     Actúa como motor híbrido y respaldo determinista cuando el LLM local no está activo.
+
+    Convención de palabras clave (keywords_correct / keywords_partial / keywords_wrong):
+      "aislar"       palabra completa; también acepta conjugaciones (aislo, aislando) y plurales.
+      "format*"      cualquier palabra que EMPIECE con "format" (formatear, formateo, formateándolo).
+      "post mortem"  varias palabras: deben aparecer en ese orden, con como máximo 2 palabras en medio.
+    Las apariciones negadas ("sin apagarlo", "no formateo") no cuentan como coincidencia.
     """
 
     @staticmethod
@@ -60,6 +71,55 @@ class DecisionValidator:
         overlap = len(phrase_stems & user_stems)
         return overlap / len(phrase_stems)
 
+    # ------------------------------------------------------------------ palabras clave
+    @classmethod
+    def _parse_keyword(cls, kw: str) -> list[str]:
+        parts: list[str] = []
+        for raw in (kw or "").split():
+            norm = cls._normalize(raw)
+            if norm:
+                parts.append(norm + "*" if raw.endswith("*") else norm)
+        return parts
+
+    @classmethod
+    def _part_matches(cls, token: str, part: str) -> bool:
+        if part.endswith("*"):
+            return token.startswith(part[:-1])
+        if token == part or token in (part + "s", part + "es"):
+            return True
+        return cls._stem_token(token) == cls._stem_token(part)
+
+    @classmethod
+    def _keyword_hit(cls, kw: str, tokens: list[str], skip_negated: bool = False) -> bool:
+        parts = cls._parse_keyword(kw)
+        if not parts:
+            return False
+        check_negation = skip_negated and parts[0] not in NEGATIONS
+        for i, tok in enumerate(tokens):
+            if not cls._part_matches(tok, parts[0]):
+                continue
+            if check_negation and any(t in NEGATIONS for t in tokens[max(0, i - NEGATION_LOOKBACK):i]):
+                continue
+            pos, ok = i, True
+            for part in parts[1:]:
+                nxt = next(
+                    (k for k in range(pos + 1, min(pos + 1 + KEYWORD_GAP + 1, len(tokens)))
+                     if cls._part_matches(tokens[k], part)),
+                    None,
+                )
+                if nxt is None:
+                    ok = False
+                    break
+                pos = nxt
+            if ok:
+                return True
+        return False
+
+    @classmethod
+    def _hits(cls, keywords: list[str] | None, tokens: list[str], skip_negated: bool = False) -> list[str]:
+        return [kw for kw in (keywords or []) if cls._keyword_hit(kw, tokens, skip_negated)]
+
+    # ------------------------------------------------------------------ evaluación
     def evaluate(
         self,
         user_text: str,
@@ -72,6 +132,7 @@ class DecisionValidator:
         keywords_wrong: list[str] | None = None,
     ) -> dict[str, Any]:
         text = self._normalize(user_text or "")
+        tokens = text.split()
         user_stems = self._extract_stems(text)
 
         if not text or len(text) < 3:
@@ -90,22 +151,21 @@ class DecisionValidator:
         wrong_scores = [self._phrase_match_score(text, user_stems, a) for a in wrong_actions]
 
         # 2. Coincidencias con palabras clave específicas del nodo
-        kw_correct_hits = [
-            kw for kw in (keywords_correct or [])
-            if self._normalize(kw) in text or (self._extract_stems(kw) and self._extract_stems(kw).issubset(user_stems))
-        ]
-        kw_partial_hits = [
-            kw for kw in (keywords_partial or [])
-            if self._normalize(kw) in text or (self._extract_stems(kw) and self._extract_stems(kw).issubset(user_stems))
-        ]
-        kw_wrong_hits = [
-            kw for kw in (keywords_wrong or [])
-            if self._normalize(kw) in text
-        ]
+        # Las apariciones negadas ("sin verificar la integridad") no cuentan ni a favor ni en contra.
+        kw_correct_hits = self._hits(keywords_correct, tokens, skip_negated=True)
+        kw_partial_hits = self._hits(keywords_partial, tokens)
+        kw_wrong_hits = self._hits(keywords_wrong, tokens, skip_negated=True)
 
         best_correct = max(correct_scores, default=0.0)
         best_partial = max(partial_scores, default=0.0)
         best_wrong = max(wrong_scores, default=0.0)
+
+        # 3. ¿Habla de otra cosa? (varias palabras y ninguna comparte raíz con el vocabulario del nodo)
+        domain_vocab = " ".join([
+            node_prompt, *correct_actions, *partial_actions, *wrong_actions,
+            *(keywords_correct or []), *(keywords_partial or []), *(keywords_wrong or []),
+        ])
+        off_topic = len(tokens) >= 4 and not (user_stems & self._extract_stems(domain_vocab))
 
         recommended_default = (
             f"La acción prioritaria recomendada es: {correct_actions[0]}."
@@ -113,8 +173,19 @@ class DecisionValidator:
             else "Priorice la contención, preservación forense y comunicación formal."
         )
 
+        strong_wrong = best_wrong >= 0.65 and best_wrong > best_correct
+        danger = bool(kw_wrong_hits) or strong_wrong
+        clearly_correct = best_correct >= 0.6 or len(kw_correct_hits) >= 2
+        looks_correct = (
+            best_correct >= 0.45
+            or len(kw_correct_hits) >= 2
+            or (len(kw_correct_hits) == 1 and best_correct >= 0.3)
+        )
+
+        mixed = False
+
         # Regla de decisión
-        if (best_wrong >= 0.65 or kw_wrong_hits) and best_correct < 0.6 and len(kw_correct_hits) == 0:
+        if strong_wrong or (danger and not clearly_correct):
             verdict = "wrong"
             score = 0.15
             reason = (
@@ -122,7 +193,16 @@ class DecisionValidator:
                 "destruir evidencia forense o agravar el impacto del incidente."
             )
             recommended = recommended_default
-        elif best_correct >= 0.45 or len(kw_correct_hits) >= 2 or (len(kw_correct_hits) == 1 and best_correct >= 0.3):
+        elif looks_correct and danger:
+            mixed = True
+            verdict = "partial"
+            score = 0.45
+            reason = (
+                "Tu respuesta incluye una acción correcta, pero también otra riesgosa que puede "
+                "destruir evidencia o agravar el incidente."
+            )
+            recommended = "Conserva solo la medida correcta y descarta la acción riesgosa."
+        elif looks_correct:
             verdict = "correct"
             score = 0.95 if (best_correct >= 0.7 or len(kw_correct_hits) >= 2) else 0.85
             reason = (
@@ -138,6 +218,11 @@ class DecisionValidator:
                 "la medida principal de este nivel para controlar completamente el riesgo."
             )
             recommended = recommended_default
+        elif off_topic:
+            verdict = "wrong"
+            score = 0.10
+            reason = "Tu respuesta no está relacionada con el incidente ni describe una acción técnica."
+            recommended = recommended_default
         else:
             verdict = "partial"
             score = 0.45
@@ -152,4 +237,11 @@ class DecisionValidator:
             "score": score,
             "reason": reason,
             "recommended_action": recommended,
+            "partial_match": best_partial,
+            "wrong_hit": danger,
+            # Coincidió con una acción o palabra parcial de la rúbrica y no hay nada peligroso
+            "partial_hit": (best_partial >= 0.45 or bool(kw_partial_hits)) and not danger,
+            # Acción correcta + acción peligrosa en la misma respuesta
+            "mixed": mixed,
+            "detected_concepts": [k.replace("*", "") for k in kw_correct_hits],
         }

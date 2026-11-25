@@ -33,14 +33,24 @@ def check_local_capabilities(ollama_url: str = "http://localhost:11434") -> Runt
         mic_available = False
         warnings.append("No se detectaron dispositivos de audio activos con sounddevice.")
 
-    tts_available = bool(shutil.which("espeak-ng") or shutil.which("espeak"))
+    tts_available = False
+    try:
+        import edge_tts  # noqa: F401
+        if shutil.which("mpg123") or shutil.which("ffplay"):
+            tts_available = True
+    except Exception:
+        pass
+    if not tts_available:
+        tts_available = bool(
+            shutil.which("piper") or shutil.which("espeak-ng") or shutil.which("espeak")
+        )
     if not tts_available:
         try:
             import pyttsx3  # noqa: F401
             tts_available = True
         except Exception:
             tts_available = False
-            warnings.append("No se encontró motor TTS (espeak-ng / pyttsx3).")
+            warnings.append("No se encontró motor TTS (edge-tts / piper / espeak-ng / pyttsx3).")
 
     try:
         resp = requests.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=1.0)

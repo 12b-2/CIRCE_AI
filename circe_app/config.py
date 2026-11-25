@@ -49,7 +49,8 @@ class CIRCEConfig:
     audio_sample_rate: int = 16000
     max_record_seconds: int = 15
     voice_language: str = "es"
-    tts_engine: Literal["auto", "espeak-ng", "pyttsx3", "piper"] = "auto"
+    tts_engine: Literal["auto", "edge-tts", "piper", "espeak-ng", "pyttsx3"] = "auto"
+    tts_voice: str = field(default_factory=lambda: os.getenv("CIRCE_TTS_VOICE", "es-MX-DaliaNeural"))
     tts_rate: int = 165
     auto_speak_instructions: bool = True
     auto_speak_feedback: bool = True

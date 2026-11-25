@@ -1,20 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any
 
-import asyncio
-from typing import Any
 from circe_app.ai.llm_client import LLMClient
 from circe_app.audio.stt import SpeechToText
 from circe_app.audio.tts import TextToSpeech
 from circe_app.config import CIRCEConfig, DEFAULT_CONFIG, ScenarioNode
 from circe_app.evaluator import DecisionValidator
 from circe_app.game_engine import ScenarioEngine
-from circe_app.session import SessionState
 from circe_app.hybrid import combine
 from circe_app.knowledge.context import build_node_context
-import threading
 from circe_app.security import strip_injection
+from circe_app.session import SessionState
 
 
 class CIRCEOrchestrator:
@@ -35,6 +34,7 @@ class CIRCEOrchestrator:
         self.tts = TextToSpeech(
             engine_name=self.config.tts_engine,
             rate=self.config.tts_rate,
+            voice=self.config.tts_voice,
         )
         self.llm = LLMClient(
             base_url=self.config.llm_base_url,
@@ -49,6 +49,7 @@ class CIRCEOrchestrator:
             active_node=self.current_node,
         )
         threading.Thread(target=self.llm.warm_up, daemon=True).start()
+        threading.Thread(target=self.stt.warm_up, daemon=True).start()
 
     def select_level(self, level_id: str) -> None:
         """Cambia o reinicia a uno de los 5 niveles disponibles."""
@@ -74,11 +75,20 @@ class CIRCEOrchestrator:
         return self.engine.get_ordered_nodes()
 
     def speak_current_instructions(self, blocking: bool = False) -> None:
-        """Narra por voz las instrucciones del nivel/nodo activo."""
+        """Narra por voz las instrucciones del nivel/nodo activo y precarga la siguiente al terminar."""
         node = self.get_active_node()
         text = f"{node.title}. {node.prompt}"
+        next_text: str | None = None
+        if node.next_node and node.next_node in self.engine.level_scenario.nodes:
+            nxt = self.engine.level_scenario.nodes[node.next_node]
+            next_text = f"{nxt.title}. {nxt.prompt}"
+
+        def _after_speak() -> None:
+            if next_text:
+                self.tts.prefetch(next_text)
+
         try:
-            self.tts.speak(text, blocking=blocking)
+            self.tts.speak(text, blocking=blocking, on_done=_after_speak if next_text else None)
         except Exception:
             pass
 

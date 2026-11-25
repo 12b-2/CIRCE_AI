@@ -8,6 +8,7 @@ sounddevice>=0.4.7
 scipy>=1.13.0
 numpy>=1.26.0
 faster-whisper>=1.0.0
+edge-tts>=7.0.0
 pyttsx3>=2.90.0
 
 # Local LLM integration

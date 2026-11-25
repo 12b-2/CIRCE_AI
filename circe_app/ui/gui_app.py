@@ -5,6 +5,7 @@ import threading
 import tkinter as tk
 from typing import Any
 
+from circe_app.audio.tts import SPANISH_NEURAL_VOICES
 from circe_app.auth import AuthError, AuthService, ProgressStore, User
 from circe_app.knowledge.scenario import get_level_scenario, list_levels
 from circe_app.orchestrator import CIRCEOrchestrator
@@ -46,6 +47,9 @@ class CIRCEGuiApp(tk.Tk):
         self.current_screen = "login"
         self.screens: dict[str, tk.Frame] = {}
         self.input_mode = "voice"
+        self.auto_eval_voice = True
+        self._is_transcribing = False
+        self._mic_meter_job: str | None = None
         self.awaiting_next_node = False
         self.last_spoken_feedback = ""
 
@@ -53,11 +57,15 @@ class CIRCEGuiApp(tk.Tk):
         self.container.pack(fill="both", expand=True)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<F2>", self._on_voice_hotkey)
+        self.bind("<Control-space>", self._on_voice_hotkey)
+        self.bind("<Control-Return>", self._on_eval_hotkey)
         self.build_ui()
         self.show_screen("login")
 
     def _on_close(self) -> None:
         try:
+            self._cancel_mic_meter()
             self._persist_progress()
             self.orchestrator.tts.stop()
             if self.orchestrator.stt.is_recording:
@@ -601,6 +609,29 @@ class CIRCEGuiApp(tk.Tk):
             command=self._test_speaker_voice,
         ).pack(side="right")
 
+        row_voice = tk.Frame(audio_box, bg=WHITE)
+        row_voice.pack(fill="x", pady=(2, 6))
+        tk.Label(row_voice, text="🗣 Voz Neuronal", bg=WHITE, fg=MUTED, font=("Nunito", 10, "bold")).pack(side="left")
+        voice_labels = [label for _, label in SPANISH_NEURAL_VOICES]
+        current_voice_label = self.orchestrator.tts.get_voice_display_name()
+        if current_voice_label not in voice_labels:
+            current_voice_label = voice_labels[0]
+        self.voice_var = tk.StringVar(value=current_voice_label)
+        voice_menu = tk.OptionMenu(row_voice, self.voice_var, *voice_labels, command=self._on_voice_selected)
+        voice_menu.config(
+            bg=SOFT,
+            fg=TEXT,
+            activebackground="#EDE8FF",
+            activeforeground=PURPLE_DARK,
+            font=("Nunito", 9, "bold"),
+            bd=0,
+            highlightthickness=0,
+            padx=8,
+            pady=2,
+        )
+        voice_menu["menu"].config(bg=WHITE, fg=TEXT, font=("Nunito", 10))
+        voice_menu.pack(side="right")
+
         row3 = tk.Frame(audio_box, bg=WHITE)
         row3.pack(fill="x", pady=6)
         tk.Label(row3, text="🤖 Modelo Evaluador", bg=WHITE, fg=TEXT, font=("Nunito", 11, "bold")).pack(side="left")
@@ -794,7 +825,19 @@ class CIRCEGuiApp(tk.Tk):
             pady=4,
             command=self._toggle_auto_tts,
         )
-        self.auto_tts_btn.pack(side="left", padx=10)
+        self.auto_tts_btn.pack(side="left", padx=(6, 4))
+        self.auto_eval_btn = tk.Button(
+            status,
+            text="⚡ Envío Voz: Auto",
+            bg="#DDF7E8",
+            fg="#146B3A",
+            font=("Nunito", 10, "bold"),
+            bd=0,
+            padx=10,
+            pady=4,
+            command=self._toggle_auto_eval_voice,
+        )
+        self.auto_eval_btn.pack(side="left", padx=(4, 10))
         self.xp_label = tk.Label(status, text="⚡ 0 XP", bg=WHITE, fg="#B37A00", font=("Nunito", 15, "bold"))
         self.xp_label.pack(side="left", padx=12)
         self.lives_label = tk.Label(status, text="❤ 3", bg=WHITE, fg=RED, font=("Nunito", 15, "bold"))
@@ -838,7 +881,7 @@ class CIRCEGuiApp(tk.Tk):
 
         self.engine_badge = tk.Label(
             top_pill_row,
-            text="Audio STT + TTS Activo",
+            text=f"🔊 Voz: {self.orchestrator.tts.get_voice_display_name()}",
             bg="#DDF7E8",
             fg="#146B3A",
             font=("Nunito", 10, "bold"),
@@ -1329,6 +1372,7 @@ class CIRCEGuiApp(tk.Tk):
         self.show_screen("sim")
 
     def _return_to_start(self) -> None:
+        self._cancel_mic_meter()
         self.orchestrator.tts.stop()
         if self.orchestrator.stt.is_recording:
             self.orchestrator.stt.stop_stream_recording()
@@ -1355,6 +1399,15 @@ class CIRCEGuiApp(tk.Tk):
             blocking=False,
         )
 
+    def _on_voice_selected(self, selected_label: str) -> None:
+        for voice_id, label in SPANISH_NEURAL_VOICES:
+            if label == selected_label:
+                self.orchestrator.tts.set_voice(voice_id)
+                self.orchestrator.config.tts_voice = voice_id
+                if hasattr(self, "engine_badge"):
+                    self.engine_badge.config(text=f"🔊 Voz: {label}")
+                break
+
     def _toggle_auto_tts(self) -> None:
         enabled = not self.orchestrator.tts.enabled
         self.orchestrator.tts.enabled = enabled
@@ -1365,6 +1418,26 @@ class CIRCEGuiApp(tk.Tk):
             self.auto_tts_btn.config(text="🔇 Voz Auto: OFF", bg=SOFT, fg=MUTED)
         else:
             self.auto_tts_btn.config(text="🔊 Voz Auto: ON", bg="#EDE8FF", fg=PURPLE_DARK)
+
+    def _toggle_auto_eval_voice(self) -> None:
+        self.auto_eval_voice = not self.auto_eval_voice
+        if self.auto_eval_voice:
+            self.auto_eval_btn.config(text="⚡ Envío Voz: Auto", bg="#DDF7E8", fg="#146B3A")
+        else:
+            self.auto_eval_btn.config(text="✋ Envío Voz: Manual", bg=SOFT, fg=MUTED)
+
+    def _on_voice_hotkey(self, _event=None) -> str | None:
+        if self.current_screen == "sim" and not self._is_transcribing:
+            self.toggle_voice_recording()
+            return "break"
+        return None
+
+    def _on_eval_hotkey(self, _event=None) -> str | None:
+        if self.current_screen == "sim" and not self._is_transcribing:
+            if str(self.evaluate_button.cget("state")) == "normal":
+                self.evaluate_current_turn()
+                return "break"
+        return None
 
     def refresh_scene(self, speak_instructions: bool = True) -> None:
         scenario = self.orchestrator.engine.level_scenario
@@ -1446,11 +1519,16 @@ class CIRCEGuiApp(tk.Tk):
         # Limpiar entrada si no estamos esperando continuar
         if not self.awaiting_next_node:
             self.answer_box.delete("1.0", "end")
+            self.voice_status_label.config(
+                text="🎙 Listo para hablar (F2) o escribir",
+                bg=SOFT,
+                fg=MUTED,
+            )
             self._set_feedback_banner(
                 bg_color=SOFT,
                 border_color=LINE,
                 title_text=f"Esperando tu respuesta para el {node.title}...",
-                body_text="Puedes responder hablando con el botón '🎙 Hablar / Grabar Audio' o escribiendo en el cuadro de texto.",
+                body_text="Puedes responder hablando con el botón '🎙 Hablar / Grabar Audio' (o tecla F2) o escribiendo en el cuadro de texto.",
                 title_fg=TEXT,
                 body_fg=MUTED,
             )
@@ -1499,26 +1577,56 @@ class CIRCEGuiApp(tk.Tk):
     # GRABACIÓN INTERACTIVA DE VOZ (STT) EN HILO SECUNDARIO
     # =========================================================================
     def toggle_voice_recording(self) -> None:
+        if self._is_transcribing:
+            return
         if not self.orchestrator.stt.is_recording:
             self._start_voice_capture()
         else:
             self._stop_and_transcribe_voice()
 
+    def _cancel_mic_meter(self) -> None:
+        if self._mic_meter_job is not None:
+            try:
+                self.after_cancel(self._mic_meter_job)
+            except Exception:
+                pass
+            self._mic_meter_job = None
+
+    def _poll_mic_meter(self) -> None:
+        if not self.orchestrator.stt.is_recording:
+            self._mic_meter_job = None
+            try:
+                self.voice_meter_bar.config(width=0)
+            except Exception:
+                pass
+            return
+        level = self.orchestrator.stt.current_level
+        width = int(520 * max(0.02, min(1.0, level)))
+        try:
+            self.voice_meter_bar.config(width=width)
+        except Exception:
+            self._mic_meter_job = None
+            return
+        self._mic_meter_job = self.after(60, self._poll_mic_meter)
+
     def _start_voice_capture(self) -> None:
         self.orchestrator.tts.stop()
         try:
-            self.orchestrator.stt.start_stream_recording(on_level=self._on_mic_level_update)
+            self.orchestrator.stt.start_stream_recording()
             self.input_mode = "voice"
             self.record_button.config(
-                text="⏹ Detener y Transcribir",
+                text="⏹ Detener y Transcribir (F2)",
                 bg=RED,
+                fg=WHITE,
                 activebackground=RED_DARK,
             )
             self.voice_status_label.config(
-                text="🔴 Grabando tu voz... habla ahora y pulsa 'Detener'",
+                text="🔴 Grabando tu voz... habla ahora y pulsa 'Detener' o F2",
                 bg=RED_LIGHT,
                 fg=RED_DARK,
             )
+            self._cancel_mic_meter()
+            self._poll_mic_meter()
         except Exception as exc:
             self.voice_status_label.config(
                 text=f"⚠ Micrófono no disponible ({exc}). Usa escritura o respuesta de ejemplo.",
@@ -1526,22 +1634,18 @@ class CIRCEGuiApp(tk.Tk):
                 fg="#7A4E00",
             )
 
-    def _on_mic_level_update(self, level: float) -> None:
-        width = int(520 * max(0.02, min(1.0, level)))
-        try:
-            self.after(0, lambda: self.voice_meter_bar.config(width=width))
-        except Exception:
-            pass
-
     def _stop_and_transcribe_voice(self) -> None:
+        self._is_transcribing = True
+        self._cancel_mic_meter()
         self.record_button.config(
             text="⏳ Transcribiendo voz...",
             bg=YELLOW,
             fg=TEXT,
             state="disabled",
         )
+        self.evaluate_button.config(state="disabled")
         self.voice_status_label.config(
-            text="⏳ Procesando audio con faster-whisper...",
+            text="⏳ Transcribiendo tu voz...",
             bg="#FFF3CF",
             fg="#7A4E00",
         )
@@ -1550,23 +1654,33 @@ class CIRCEGuiApp(tk.Tk):
         def _worker() -> None:
             try:
                 wav_path = self.orchestrator.stt.stop_stream_recording()
-                transcript = asyncio.run(self.orchestrator.stt.transcribe(audio_path=wav_path))
-                self.after(0, lambda: self._on_transcription_complete(transcript, None))
+                audio_data = self.orchestrator.stt.last_recorded_audio
+                transcript = asyncio.run(
+                    self.orchestrator.stt.transcribe(audio_path=wav_path, audio_data=audio_data)
+                )
+                self.after(0, lambda t=transcript: self._on_transcription_complete(t, None))
             except Exception as exc:
-                self.after(0, lambda: self._on_transcription_complete("", exc))
+                self.after(0, lambda err=exc: self._on_transcription_complete("", err))
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_transcription_complete(self, transcript: str, error: Exception | None) -> None:
+        self._is_transcribing = False
         self.record_button.config(
             text="🎙 Hablar / Grabar Audio",
             bg=PURPLE,
             fg=WHITE,
             state="normal",
         )
+        if not self.awaiting_next_node:
+            self.evaluate_button.config(state="normal")
+
         if error is not None:
+            short_err = str(error).strip() or type(error).__name__
+            if len(short_err) > 85:
+                short_err = short_err[:82] + "..."
             self.voice_status_label.config(
-                text="⚠ STT sin modelo en caché offline; puedes dictar o editar en el cuadro",
+                text=f"⚠ Error STT: {short_err}",
                 bg="#FFF3CF",
                 fg="#7A4E00",
             )
@@ -1575,11 +1689,19 @@ class CIRCEGuiApp(tk.Tk):
         if transcript:
             self.answer_box.delete("1.0", "end")
             self.answer_box.insert("1.0", transcript)
-            self.voice_status_label.config(
-                text="✓ Audio transcrito con éxito (listo para evaluar)",
-                bg="#DDF7E8",
-                fg="#146B3A",
-            )
+            if self.auto_eval_voice and len(transcript.strip()) >= 3 and not self.awaiting_next_node:
+                self.voice_status_label.config(
+                    text="✓ Voz transcrita · Evaluando con Circe...",
+                    bg="#DDF7E8",
+                    fg="#146B3A",
+                )
+                self.evaluate_current_turn()
+            else:
+                self.voice_status_label.config(
+                    text="✓ Audio transcrito con éxito (listo para evaluar)",
+                    bg="#DDF7E8",
+                    fg="#146B3A",
+                )
         else:
             self.voice_status_label.config(
                 text="No se detectó voz clara. Intenta hablar más cerca del micrófono.",
@@ -1591,7 +1713,10 @@ class CIRCEGuiApp(tk.Tk):
     # EVALUACIÓN CON MODELO IA Y RETROALIMENTACIÓN EN TEXTO + AUDIO
     # =========================================================================
     def evaluate_current_turn(self) -> None:
+        if self._is_transcribing:
+            return
         if self.orchestrator.stt.is_recording:
+            self._cancel_mic_meter()
             self.orchestrator.stt.stop_stream_recording()
             self.record_button.config(text="🎙 Hablar / Grabar Audio", bg=PURPLE, fg=WHITE, state="normal")
 
@@ -1609,6 +1734,11 @@ class CIRCEGuiApp(tk.Tk):
             return
 
         self.evaluate_button.config(state="disabled", text="Evaluando...")
+        self.voice_status_label.config(
+            text="🤖 Circe está evaluando tu decisión...",
+            bg="#EDE8FF",
+            fg=PURPLE_DARK,
+        )
 
         def _eval_worker() -> None:
             try:
@@ -1620,9 +1750,9 @@ class CIRCEGuiApp(tk.Tk):
                         input_mode=self.input_mode,
                     )
                 )
-                self.after(0, lambda: self._on_evaluation_ready(result, None))
+                self.after(0, lambda r=result: self._on_evaluation_ready(r, None))
             except Exception as exc:
-                self.after(0, lambda: self._on_evaluation_ready(None, exc))
+                self.after(0, lambda err=exc: self._on_evaluation_ready(None, err))
 
         threading.Thread(target=_eval_worker, daemon=True).start()
 
@@ -1649,6 +1779,11 @@ class CIRCEGuiApp(tk.Tk):
         self.last_spoken_feedback = result.get("spoken_feedback", "")
 
         self.engine_badge.config(text=f"Evaluado por: {engine_used}")
+        self.voice_status_label.config(
+            text="✓ Evaluación lista · Continúa al siguiente nivel",
+            bg="#DDF7E8",
+            fg="#146B3A",
+        )
 
         if verdict == "correct":
             bg_c, bd_c, tfg, bfg = "#DDF7E8", GREEN, "#146B3A", "#10202B"

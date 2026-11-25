@@ -157,7 +157,7 @@ class CIRCEGuiApp(tk.Tk):
         right = tk.Frame(screen, bg=BG)
         right.pack(side="left", fill="both", expand=True)
 
-        inner = self._build_auth_card(right, 420, 420, PURPLE)
+        inner = self._build_auth_card(right, 420, 520, PURPLE)
 
         tk.Label(inner, text="Bienvenido de nuevo", bg=WHITE, fg=TEXT, font=("Nunito", 22, "bold")).pack(
             anchor="w"
@@ -168,18 +168,18 @@ class CIRCEGuiApp(tk.Tk):
             bg=WHITE,
             fg=MUTED,
             font=("Nunito", 11, "bold"),
-        ).pack(anchor="w", pady=(2, 26))
+        ).pack(anchor="w", pady=(2, 18))
 
         user_wrap, self.login_username_var = self._build_labeled_entry(inner, "Usuario")
-        user_wrap.pack(fill="x", pady=(0, 14))
+        user_wrap.pack(fill="x", pady=(0, 10))
         pass_wrap, self.login_password_var = self._build_labeled_entry(inner, "Contraseña", show="•")
-        pass_wrap.pack(fill="x", pady=(0, 6))
+        pass_wrap.pack(fill="x", pady=(0, 4))
 
         self.login_status_label = tk.Label(
             inner, text="", bg=WHITE, fg=RED_DARK, font=("Nunito", 10, "bold"), wraplength=320,
             justify="left", anchor="w",
         )
-        self.login_status_label.pack(fill="x", pady=(8, 2))
+        self.login_status_label.pack(fill="x", pady=(4, 2))
 
         tk.Button(
             inner,
@@ -193,25 +193,29 @@ class CIRCEGuiApp(tk.Tk):
             pady=12,
             cursor="hand2",
             command=self._handle_login,
-        ).pack(fill="x", pady=(16, 20))
+        ).pack(fill="x", pady=(8, 8))
 
         switch_row = tk.Frame(inner, bg=WHITE)
-        switch_row.pack(fill="x")
+        switch_row.pack(fill="x", pady=(4, 0))
         tk.Label(switch_row, text="¿No tienes cuenta?", bg=WHITE, fg=MUTED, font=("Nunito", 10, "bold")).pack(
-            side="left"
+            anchor="w"
         )
         tk.Button(
             switch_row,
-            text="Crear una cuenta",
+            text="Crear cuenta nueva",
             bg=WHITE,
             fg=PURPLE,
+            activebackground="#EDE8FF",
             activeforeground=PURPLE_DARK,
-            font=("Nunito", 10, "bold", "underline"),
+            font=("Nunito", 11, "bold"),
             bd=0,
             relief="flat",
+            highlightbackground=PURPLE,
+            highlightthickness=1,
+            pady=8,
             cursor="hand2",
             command=self._go_to_register,
-        ).pack(side="left", padx=6)
+        ).pack(fill="x", pady=(6, 0))
 
         return screen
 
@@ -1784,7 +1788,7 @@ class CIRCEGuiApp(tk.Tk):
                 font=("Nunito", 11, "bold"),
             ).pack(side="right")
 
-        if self.orchestrator.config.auto_speak_feedback:
+        if session.score >= 80:
             self.speak_results_summary()
 
     def speak_results_summary(self) -> None:

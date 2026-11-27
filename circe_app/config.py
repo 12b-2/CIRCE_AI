@@ -41,7 +41,7 @@ class CIRCEConfig:
     default_level_id: str = "level_1"
     max_decisions: int = 5
     llm_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_URL", "http://localhost:11434"))
-    llm_model: str = field(default_factory=lambda: os.getenv("CIRCE_LLM_MODEL", "llama3.1"))
+    llm_model: str = field(default_factory=lambda: os.getenv("CIRCE_LLM_MODEL", "llama3.2"))
     llm_timeout_seconds: int = 30
     stt_model: str = field(default_factory=lambda: os.getenv("CIRCE_STT_MODEL", "tiny"))
     stt_device: str = field(default_factory=lambda: os.getenv("CIRCE_STT_DEVICE", "cpu"))

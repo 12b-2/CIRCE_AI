@@ -13,7 +13,7 @@
 - **Interacción Multimodal Completa (Voz y Texto)**:
   - **Instrucciones en Texto y Audio**: Cada nivel presenta las instrucciones en pantalla y las narra automáticamente en voz alta en español (`espeak-ng` / `pyttsx3` no bloqueante).
   - **Respuesta del Estudiante por Audio o Texto**: Grabación interactiva de micrófono en tiempo real (`sounddevice` PCM 16-bit 16kHz + transcripción `faster-whisper`) o entrada directa por teclado.
-  - **Evaluación del Modelo en Texto y Audio**: Retroalimentación inmediata hablada y escrita generada por **Ollama (`llama3.1` / `qwen2.5`)** con fallback transparente al **Evaluador Semántico Local** en español.
+  - **Evaluación del Modelo en Texto y Audio**: Retroalimentación inmediata hablada y escrita generada por **Ollama (`llama3.2`, `ministral-3:8b`)** con fallback transparente al **Evaluador Semántico Local** en español.
 - **Cuentas de Usuario y Avance Persistente**:
   - **Login y Registro Local**: Cada estudiante crea una cuenta (usuario + contraseña con hash `PBKDF2-SHA256`) almacenada en una base de datos SQLite local (`data/circe.db`), sin necesidad de conexión a internet.
   - **Guardado Automático de Progreso**: Score, XP, vidas y el nodo activo de cada nivel se guardan automáticamente tras cada decisión evaluada, permitiendo reanudar un nivel exactamente donde se dejó al volver a iniciar sesión.

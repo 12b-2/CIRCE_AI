@@ -51,11 +51,11 @@ def sanitize_student_text(text: str, max_chars: int = 600) -> str:
 
 
 class LLMClient:
-    """Cliente de evaluación con Ollama (llama3.1, qwen2.5...) con salida validada."""
+    """Cliente de evaluación con Ollama (llama3.2, llama3.1, ministral...) con salida validada."""
 
     def __init__(self, base_url: str | None = None, model: str | None = None, timeout: int = 18) -> None:
         self.base_url = (base_url or os.getenv("OLLAMA_URL", "http://localhost:11434")).rstrip("/")
-        self.model = model or os.getenv("CIRCE_LLM_MODEL", "llama3.1")
+        self.model = model or os.getenv("CIRCE_LLM_MODEL", "llama3.2")
         self.timeout = timeout
 
     def is_available(self) -> bool:

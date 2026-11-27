@@ -158,7 +158,7 @@ CASOS = {
 
 
 async def main() -> None:
-    modelo = os.getenv("CIRCE_LLM_MODEL", "llama3.1")
+    modelo = os.getenv("CIRCE_LLM_MODEL", "llama3.2")
     llm_activo = os.getenv("CIRCE_DISABLE_LLM") != "1"
     filas = []
 
